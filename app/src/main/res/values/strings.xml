@@ -1,0 +1,5 @@
+<resources>
+    <string name="app_name">BluetoothDeviceScan</string>
+    <string name="title_connected_devices">Connected Devices</string>
+    <string name="title_available_devices">Available Devices</string>
+</resources>
