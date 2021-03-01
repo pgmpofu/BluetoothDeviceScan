@@ -1,95 +1,126 @@
 package com.ai.bluetoothdevicescan
 
-import android.Manifest
 import android.bluetooth.BluetoothAdapter
 import android.bluetooth.BluetoothDevice
-import android.content.BroadcastReceiver
+import android.bluetooth.BluetoothSocket
 import android.content.Context
 import android.content.Intent
-import android.content.IntentFilter
-import android.content.pm.PackageManager
 import android.os.Bundle
-import android.widget.Toast
+import android.os.Handler
+import android.os.Looper
+import android.os.PersistableBundle
 import androidx.appcompat.app.AppCompatActivity
-import androidx.core.app.ActivityCompat
-import androidx.core.content.ContextCompat
-import androidx.recyclerview.widget.LinearLayoutManager
 import kotlinx.android.synthetic.main.activity_main.*
 import timber.log.Timber
+import java.io.IOException
+import java.io.OutputStream
+import java.util.*
 
 class MainActivity : AppCompatActivity() {
 
-    private val permissions = arrayOf(Manifest.permission.ACCESS_COARSE_LOCATION, Manifest.permission.BLUETOOTH, Manifest.permission.BLUETOOTH_ADMIN)
-    val bluetoothAdapter: BluetoothAdapter? = BluetoothAdapter.getDefaultAdapter()
-    val pairedDevices: Set<BluetoothDevice>? = bluetoothAdapter?.bondedDevices
-    val discoveredDevices: MutableSet<BluetoothDevice> = mutableSetOf()
+    val bluetoothAdapter = BluetoothAdapter.getDefaultAdapter()
 
-    override fun onCreate(savedInstanceState: Bundle?) {
+    override fun onCreate(savedInstanceState: Bundle?)  {
         super.onCreate(savedInstanceState)
         setContentView(R.layout.activity_main)
-        if(!hasPermission()) {
-            ActivityCompat.requestPermissions(this, permissions, PERMISSION_CODE)
-        }
-        if (bluetoothAdapter == null) {
-                Toast.makeText(applicationContext, "Not supported", Toast.LENGTH_LONG).show()
-            }
 
-        if (bluetoothAdapter?.isEnabled == false) {
-            val enableBtIntent = Intent(BluetoothAdapter.ACTION_REQUEST_ENABLE)
-            startActivityForResult(enableBtIntent, REQUEST_ENABLE_BT)
-        }
-        pairedDevicesList.layoutManager = LinearLayoutManager(this)
-        availableDevicesList.layoutManager = LinearLayoutManager(this)
-        pairedDevicesList.adapter = pairedDevices?.let { PairedDevicesAdapter(it.toTypedArray()) }
+        Timber.i("Landed in onCreate")
 
-        if(bluetoothAdapter?.isDiscovering == true) {
-            bluetoothAdapter.cancelDiscovery()
+        scanButton.setOnClickListener {
+            val connectedDevicesIntent =
+                Intent(applicationContext, ConnectedDevicesActivity::class.java)
+            startActivity(connectedDevicesIntent)
         }
-        bluetoothAdapter?.startDiscovery()
-        // Register for broadcasts when a device is discovered.
-        val filter = IntentFilter(BluetoothDevice.ACTION_FOUND)
-        registerReceiver(receiver, filter)
-        Timber.i("Receiver registered")
+
+        printButton.setOnClickListener {
+            val device  = bluetoothAdapter.getRemoteDevice("A8:B2:DA:2F:57:4C")
+            ConnectThread(device).run()
+        }
     }
 
-    private val receiver = object : BroadcastReceiver() {
+    private inner class ConnectThread(device: BluetoothDevice) : Thread() {
 
-        override fun onReceive(context: Context, intent: Intent) {
-            when(intent.action) {
-                BluetoothDevice.ACTION_FOUND -> {
-                    // Discovery has found a device. Get the BluetoothDevice
-                    // object and its info from the Intent.
-                    Timber.i("Device Found!!")
-                    val device: BluetoothDevice =
-                        intent.getParcelableExtra(BluetoothDevice.EXTRA_DEVICE)!!
-                    discoveredDevices.add(device)
+        private val mmSocket: BluetoothSocket? by lazy(LazyThreadSafetyMode.NONE) {
+            device.createRfcommSocketToServiceRecord(device.uuids[0].uuid)
+        }
+
+        override fun run() {
+            // Cancel discovery because it otherwise slows down the connection.
+            bluetoothAdapter?.cancelDiscovery()
+
+            mmSocket?.use { socket ->
+                // Connect to the remote device through the socket. This call blocks
+                // until it succeeds or throws an exception.
+
+                socket.connect()
+
+                // The connection attempt succeeded. Perform work associated with
+                // the connection in a separate thread.
+                val printing = "Lorem Ipsum is simply dummy text of the printing and typesetting industry. " +
+                        "Lorem Ipsum has been the industry's standard dummy text ever since the 1500s, when an" +
+                        " unknown printer took a galley of type and scrambled it to make a type specimen book. " +
+                        "It has survived not only five centuries, but also the leap into electronic typesetting, " +
+                        "remaining essentially unchanged. It was popularised in the 1960s with the release of Letraset " +
+                        "sheets containing Lorem Ipsum passages, and more recently with desktop publishing software like " +
+                        "Aldus PageMaker including versions of Lorem Ipsum."
+                Looper.myLooper()?.let { Handler(it) }
+                    ?.let { ConnectedThread(it, socket).write(printing.encodeToByteArray()) }
+            }
+        }
+
+        // Closes the client socket and causes the thread to finish.
+        fun cancel() {
+            try {
+                mmSocket?.close()
+            } catch (e: IOException) {
+                Timber.i( "Could not close the client socket")
+            }
+        }
+    }
+
+    private inner class ConnectedThread(private val handler: Handler, private val mmSocket: BluetoothSocket) : Thread() {
+
+        private val mmOutStream: OutputStream = mmSocket.outputStream
+
+
+        // Call this from the main activity to send data to the remote device.
+        fun write(bytes: ByteArray) {
+            try {
+                mmOutStream.write(bytes)
+            } catch (e: IOException) {
+                Timber.i("Error occurred when sending data")
+
+                // Send a failure message back to the activity.
+                val writeErrorMsg = handler.obtainMessage(MESSAGE_TOAST)
+                val bundle = Bundle().apply {
+                    putString("toast", "Couldn't send data to the other device")
                 }
+                writeErrorMsg.data = bundle
+                handler.sendMessage(writeErrorMsg)
+                return
             }
-            availableDevicesList.adapter = AvailableDevicesAdapter(discoveredDevices.toTypedArray())
+
+            // Share the sent message with the UI activity.
+            val writtenMsg = handler.obtainMessage(
+                MESSAGE_WRITE, -1, -1, bytes
+            )
+            writtenMsg.sendToTarget()
         }
-    }
 
-    override fun onActivityResult(requestCode: Int, resultCode: Int, data: Intent?) {
-        super.onActivityResult(requestCode, resultCode, data)
-        when(resultCode) {
-            RESULT_CANCELED -> Toast.makeText(applicationContext, "Cannot proceed without bluetooth", Toast.LENGTH_LONG).show()
+        // Call this method from the main activity to shut down the connection.
+        fun cancel() {
+            try {
+                mmSocket.close()
+            } catch (e: IOException) {
+                Timber.i("Could not close the connect socket")
+            }
         }
-    }
-
-    override fun onDestroy() {
-        super.onDestroy()
-        unregisterReceiver(receiver)
-    }
-
-
-    private fun hasPermission(): Boolean {
-        return ContextCompat.checkSelfPermission(baseContext, Manifest.permission.ACCESS_COARSE_LOCATION) == PackageManager.PERMISSION_GRANTED
-                && ContextCompat.checkSelfPermission(baseContext, Manifest.permission.BLUETOOTH) == PackageManager.PERMISSION_GRANTED
-                && ContextCompat.checkSelfPermission(baseContext, Manifest.permission.BLUETOOTH_ADMIN) == PackageManager.PERMISSION_GRANTED
     }
 
     companion object {
-        const val REQUEST_ENABLE_BT = 0
-        const val PERMISSION_CODE = 1
+        const val MESSAGE_WRITE: Int = 1
+        const val MESSAGE_TOAST: Int = 2
     }
+
 }
+
