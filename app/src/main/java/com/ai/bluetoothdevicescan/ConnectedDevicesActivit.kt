@@ -66,7 +66,8 @@ class ConnectedDevicesActivity : AppCompatActivity() {
                     discoveredDevices.add(device)
                 }
             }
-            availableDevicesList.adapter = AvailableDevicesAdapter(discoveredDevices.toTypedArray())
+            availableDevicesList.adapter =
+                pairedDevices?.let { AvailableDevicesAdapter(discoveredDevices.toTypedArray(), it) }
         }
     }
 
